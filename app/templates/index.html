@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>DevSecOps Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="container">
+    <h1>🔐 DevSecOps Security Scanner</h1>
+
+    <form action="/scan" method="post" enctype="multipart/form-data">
+        <input type="file" name="file" required>
+        <button type="submit">Scan Project</button>
+    </form>
+
+    {% if results %}
+        <h2>Scan Results</h2>
+        <pre>{{ results | tojson(indent=2) }}</pre>
+    {% endif %}
+</div>
+
+</body>
+</html>
