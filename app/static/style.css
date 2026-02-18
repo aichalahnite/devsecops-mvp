@@ -30,3 +30,30 @@ pre {
     padding: 15px;
     overflow-x: auto;
 }
+
+.scan-section {
+    margin-bottom: 30px;
+    border: 1px solid #ddd;
+    padding: 20px;
+    border-radius: 8px;
+    background: #f9f9f9;
+}
+
+.scan-section h3 {
+    margin-top: 0;
+    color: #333;
+}
+
+.error {
+    color: #d9534f;
+    font-weight: bold;
+}
+
+details {
+    margin-top: 10px;
+}
+
+summary {
+    cursor: pointer;
+    font-weight: bold;
+}

@@ -1,7 +1,11 @@
 version: "3.9"
 
 services:
-  scanner:
+  api:
     build: .
+    container_name: devsecops-api
     ports:
       - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: always
