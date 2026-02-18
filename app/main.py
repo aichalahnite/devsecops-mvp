@@ -91,15 +91,26 @@ def cleanup_scan(scan_id):
             pass
 
 # =====================================================
-# PROJECT DETECTION
+# PROJECT DETECTION (RECURSIVE)
 # =====================================================
 def detect_project_type(path):
-    if os.path.exists(os.path.join(path, "docker-compose.yml")):
-        return "docker-compose"
-    elif os.path.exists(os.path.join(path, "Dockerfile")):
-        return "dockerfile"
+    dockerfile_path = None
+    compose_path = None
+
+    for root, dirs, files in os.walk(path):
+        if "docker-compose.yml" in files and not compose_path:
+            compose_path = os.path.join(root, "docker-compose.yml")
+        if "Dockerfile" in files and not dockerfile_path:
+            dockerfile_path = os.path.join(root, "Dockerfile")
+        if compose_path and dockerfile_path:
+            break
+
+    if compose_path:
+        return "docker-compose", os.path.dirname(compose_path)
+    elif dockerfile_path:
+        return "dockerfile", os.path.dirname(dockerfile_path)
     else:
-        return "source-code"
+        return "source-code", path
 
 # =====================================================
 # ROUTES
@@ -241,16 +252,14 @@ def run_trivy(path, scan_id):
 # DAST SCAN (DYNAMIC)
 # =====================================================
 def run_dast(path, scan_id):
-    project_type = detect_project_type(path)
+    project_type, target_path = detect_project_type(path)
     results = {}
 
     try:
         if project_type == "docker-compose":
-            # --------------------------
             # Run docker-compose services
-            # --------------------------
-            subprocess.run(["docker-compose", "up", "-d"], cwd=path, check=True)
-            compose_file = os.path.join(path, "docker-compose.yml")
+            subprocess.run(["docker-compose", "up", "-d"], cwd=target_path, check=True)
+            compose_file = os.path.join(target_path, "docker-compose.yml")
             with open(compose_file) as f:
                 compose = yaml.safe_load(f)
 
@@ -297,13 +306,13 @@ def run_dast(path, scan_id):
                     results[svc["name"]] = {"raw": zap_output.decode()}
 
             # Cleanup docker-compose
-            subprocess.run(["docker-compose", "down"], cwd=path, check=True)
+            subprocess.run(["docker-compose", "down"], cwd=target_path, check=True)
 
         elif project_type == "dockerfile":
             # Single Dockerfile
             image_tag = f"temp_image_{scan_id}"
             container_name = f"temp_container_{scan_id}"
-            docker_client.images.build(path=path, tag=image_tag)
+            docker_client.images.build(path=target_path, tag=image_tag)
             container = docker_client.containers.run(
                 image_tag,
                 name=container_name,
@@ -357,7 +366,6 @@ def run_dast(path, scan_id):
                 pass
 
         else:
-            # Source code fallback (no container)
             results["error"] = "No Dockerfile or docker-compose.yml found; cannot run DAST"
 
         return results
