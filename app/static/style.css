@@ -1,59 +1,178 @@
 body {
-    font-family: Arial;
-    background: #f4f6f9;
+    font-family: "Segoe UI", sans-serif;
+    background: linear-gradient(135deg, #f4f6f9, #e9eef5);
+    margin: 0;
+    padding: 0;
 }
 
 .container {
-    width: 60%;
-    margin: auto;
-    margin-top: 50px;
+    width: 70%;
+    margin: 40px auto;
     background: white;
     padding: 30px;
-    border-radius: 8px;
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.08);
 }
 
 h1 {
     text-align: center;
+    margin-bottom: 30px;
+}
+
+form {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-bottom: 20px;
+}
+
+input[type="file"] {
+    padding: 6px;
 }
 
 button {
-    background: #007BFF;
-    color: white;
-    padding: 10px 15px;
+    padding: 10px 16px;
     border: none;
     cursor: pointer;
-}
-
-pre {
-    background: #111;
-    color: #00ff88;
-    padding: 15px;
-    overflow-x: auto;
-}
-
-.scan-section {
-    margin-bottom: 30px;
-    border: 1px solid #ddd;
-    padding: 20px;
-    border-radius: 8px;
-    background: #f9f9f9;
-}
-
-.scan-section h3 {
-    margin-top: 0;
-    color: #333;
-}
-
-.error {
-    color: #d9534f;
+    border-radius: 6px;
     font-weight: bold;
+    transition: 0.2s ease;
+    background: #007BFF;
+    color: white;
+}
+
+button:hover {
+    opacity: 0.9;
+}
+
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+button.danger {
+    background: #dc3545;
+}
+
+.progress {
+    width: 100%;
+    background: #ddd;
+    border-radius: 6px;
+    height: 20px;
+    margin-top: 20px;
+    overflow: hidden;
+}
+
+.progress-bar {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #4caf50, #2ecc71);
+    transition: width 0.5s ease;
+}
+
+.status {
+    margin-top: 20px;
+    font-size: 15px;
+    background: #f8f9fa;
+    padding: 10px;
+    border-radius: 6px;
+}
+
+.score {
+    margin-top: 20px;
+    font-size: 22px;
+    font-weight: bold;
+    text-align: center;
+}
+
+.score span.good {
+    color: #28a745;
+}
+
+.score span.medium {
+    color: #ffc107;
+}
+
+.score span.bad {
+    color: #dc3545;
 }
 
 details {
-    margin-top: 10px;
+    margin-top: 15px;
+    background: #f8f9fa;
+    padding: 12px;
+    border-radius: 8px;
+    transition: 0.2s ease;
+}
+
+details[open] {
+    background: #eef2f7;
 }
 
 summary {
     cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     font-weight: bold;
+}
+
+.summary-left {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.summary-right {
+    font-size: 13px;
+    color: #555;
+}
+
+.tool-name {
+    font-size: 14px;
+}
+
+.status-badge {
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    text-transform: uppercase;
+}
+
+.status-badge.done {
+    background: #28a745;
+    color: white;
+}
+
+.status-badge.running {
+    background: #ffc107;
+    color: black;
+}
+
+.status-badge.failed {
+    background: #dc3545;
+    color: white;
+}
+
+.status-badge.pending {
+    background: #6c757d;
+    color: white;
+}
+
+pre {
+    max-height: 300px;
+    overflow: auto;
+    background: #111;
+    color: #00ff88;
+    padding: 10px;
+    border-radius: 5px;
+    font-size: 12px;
+    margin-top: 10px;
+}
+
+.error {
+    color: #dc3545;
+    font-weight: bold;
+    margin-top: 15px;
+    display: block;
 }

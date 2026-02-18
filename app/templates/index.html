@@ -3,126 +3,143 @@
 <head>
     <title>DevSecOps Dashboard</title>
     <link rel="stylesheet" href="/static/style.css">
-    <style>
-        button:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        .progress {
-            width: 100%;
-            background: #ddd;
-            border-radius: 5px;
-            margin-top: 20px;
-        }
-
-        .progress-bar {
-            width: 0%;
-            height: 20px;
-            background: #4caf50;
-            border-radius: 5px;
-            transition: width 0.4s;
-        }
-
-        details {
-            margin-top: 10px;
-            background: #f5f5f5;
-            padding: 10px;
-            border-radius: 5px;
-        }
-
-        pre {
-            max-height: 300px;
-            overflow: auto;
-            background: #111;
-            color: #0f0;
-            padding: 10px;
-            border-radius: 5px;
-        }
-    </style>
 </head>
 
 <body>
 <div class="container">
-    <h1>🔐 DevSecOps Security Scanner</h1>
+
+    <h1>🚀 DevSecOps Security Scanner</h1>
 
     <form id="scanForm">
         <input type="file" name="file" id="fileInput" required>
-        <button type="submit" id="scanBtn">Scan Project</button>
+        <button type="submit" id="scanBtn">Start Scan</button>
+        <button type="button" id="cancelBtn" class="danger" disabled>Cancel</button>
     </form>
 
     <div class="progress">
         <div class="progress-bar" id="progressBar"></div>
     </div>
 
-    <div id="status"></div>
+    <div id="statusBox"></div>
+    <div id="scoreBox"></div>
     <div id="results"></div>
+
 </div>
 
 <script>
 const form = document.getElementById("scanForm");
 const scanBtn = document.getElementById("scanBtn");
+const cancelBtn = document.getElementById("cancelBtn");
 const progressBar = document.getElementById("progressBar");
-const statusDiv = document.getElementById("status");
+const statusBox = document.getElementById("statusBox");
 const resultsDiv = document.getElementById("results");
+const scoreBox = document.getElementById("scoreBox");
 
-let scanStarted = false;
+let scanId = null;
+let polling = null;
 
 form.addEventListener("submit", async (e) => {
     e.preventDefault();
 
-    if (scanStarted) return; // 🔒 HARD BLOCK
-
-    scanStarted = true;
     scanBtn.disabled = true;
-    scanBtn.textContent = "Scanning… ⏳";
+    cancelBtn.disabled = false;
+    scanBtn.textContent = "Scanning...";
+    resultsDiv.innerHTML = "";
+    scoreBox.innerHTML = "";
+    progressBar.style.width = "0%";
 
     const formData = new FormData(form);
 
-    try {
-        const res = await fetch("/scan", {
-            method: "POST",
-            body: formData
-        });
+    const res = await fetch("/scan", {
+        method: "POST",
+        body: formData
+    });
 
-        const data = await res.json();
-        pollStatus(data.scan_id);
-    } catch (err) {
-        alert("Failed to start scan");
-        scanBtn.disabled = false;
-        scanBtn.textContent = "Scan Project";
-        scanStarted = false;
-    }
+    const data = await res.json();
+    scanId = data.scan_id;
+    startPolling();
 });
 
-async function pollStatus(scanId) {
-    const interval = setInterval(async () => {
+cancelBtn.addEventListener("click", async () => {
+    if (!scanId) return;
+
+    await fetch(`/cancel/${scanId}`, { method: "POST" });
+
+    cancelBtn.disabled = true;
+    scanBtn.disabled = false;
+    scanBtn.textContent = "Start Scan";
+
+    statusBox.innerHTML = "<span class='error'>Scan Cancelled</span>";
+    clearInterval(polling);
+});
+
+function startPolling() {
+    polling = setInterval(async () => {
+
         const res = await fetch(`/scan-status/${scanId}`);
         const data = await res.json();
 
         progressBar.style.width = data.progress + "%";
-        statusDiv.innerHTML = `<strong>Current:</strong> ${data.current}`;
+
+        statusBox.innerHTML = `
+            <div class="status">
+                <strong>Current Step:</strong> ${data.current}
+                <br>
+                <strong>Total Time:</strong> ⏱ ${data.total_duration || 0}s
+            </div>
+        `;
+
+        if (data.score !== null) {
+            scoreBox.innerHTML = `
+                <div class="score">
+                    Security Score:
+                    <span class="${getScoreClass(data.score)}">
+                        ${data.score}/100
+                    </span>
+                </div>
+            `;
+        }
 
         resultsDiv.innerHTML = "";
 
         for (const [name, step] of Object.entries(data.steps)) {
+
             const block = document.createElement("details");
+
             block.innerHTML = `
                 <summary>
-                    ${name.toUpperCase()} — ${step.status}
-                    ${step.time ? `(${step.time}s)` : ""}
+                    <div class="summary-left">
+                        <span class="tool-name">${name.toUpperCase()}</span>
+                        <span class="status-badge ${step.status}">
+                            ${step.status}
+                        </span>
+                    </div>
+                    <div class="summary-right">
+                        ⏱ ${step.duration || 0}s
+                    </div>
                 </summary>
                 <pre>${step.result ? JSON.stringify(step.result, null, 2) : ""}</pre>
             `;
+
             resultsDiv.appendChild(block);
         }
 
-        if (data.current === "finished" || data.current === "failed") {
-            clearInterval(interval);
-            scanBtn.textContent = "Scan Completed ✅";
+        if (data.current === "finished" || data.current === "failed" || data.current === "cancelled") {
+            clearInterval(polling);
+            scanBtn.disabled = false;
+            cancelBtn.disabled = true;
+            scanBtn.textContent = "Start Scan";
         }
+
     }, 1500);
 }
+
+function getScoreClass(score) {
+    if (score >= 80) return "good";
+    if (score >= 50) return "medium";
+    return "bad";
+}
 </script>
+
 </body>
 </html>

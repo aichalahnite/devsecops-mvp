@@ -4,8 +4,20 @@ services:
   api:
     build: .
     container_name: devsecops-api
+    user: root
     ports:
       - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    restart: always
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.0
+    networks:
+      - scanner_net
+
+networks:
+  scanner_net:
+    driver: bridge
