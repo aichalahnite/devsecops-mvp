@@ -3,22 +3,126 @@
 <head>
     <title>DevSecOps Dashboard</title>
     <link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
+    <style>
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
 
+        .progress {
+            width: 100%;
+            background: #ddd;
+            border-radius: 5px;
+            margin-top: 20px;
+        }
+
+        .progress-bar {
+            width: 0%;
+            height: 20px;
+            background: #4caf50;
+            border-radius: 5px;
+            transition: width 0.4s;
+        }
+
+        details {
+            margin-top: 10px;
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 5px;
+        }
+
+        pre {
+            max-height: 300px;
+            overflow: auto;
+            background: #111;
+            color: #0f0;
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+
+<body>
 <div class="container">
     <h1>🔐 DevSecOps Security Scanner</h1>
 
-    <form action="/scan" method="post" enctype="multipart/form-data">
-        <input type="file" name="file" required>
-        <button type="submit">Scan Project</button>
+    <form id="scanForm">
+        <input type="file" name="file" id="fileInput" required>
+        <button type="submit" id="scanBtn">Scan Project</button>
     </form>
 
-    {% if results %}
-        <h2>Scan Results</h2>
-        <pre>{{ results | tojson(indent=2) }}</pre>
-    {% endif %}
+    <div class="progress">
+        <div class="progress-bar" id="progressBar"></div>
+    </div>
+
+    <div id="status"></div>
+    <div id="results"></div>
 </div>
 
+<script>
+const form = document.getElementById("scanForm");
+const scanBtn = document.getElementById("scanBtn");
+const progressBar = document.getElementById("progressBar");
+const statusDiv = document.getElementById("status");
+const resultsDiv = document.getElementById("results");
+
+let scanStarted = false;
+
+form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    if (scanStarted) return; // 🔒 HARD BLOCK
+
+    scanStarted = true;
+    scanBtn.disabled = true;
+    scanBtn.textContent = "Scanning… ⏳";
+
+    const formData = new FormData(form);
+
+    try {
+        const res = await fetch("/scan", {
+            method: "POST",
+            body: formData
+        });
+
+        const data = await res.json();
+        pollStatus(data.scan_id);
+    } catch (err) {
+        alert("Failed to start scan");
+        scanBtn.disabled = false;
+        scanBtn.textContent = "Scan Project";
+        scanStarted = false;
+    }
+});
+
+async function pollStatus(scanId) {
+    const interval = setInterval(async () => {
+        const res = await fetch(`/scan-status/${scanId}`);
+        const data = await res.json();
+
+        progressBar.style.width = data.progress + "%";
+        statusDiv.innerHTML = `<strong>Current:</strong> ${data.current}`;
+
+        resultsDiv.innerHTML = "";
+
+        for (const [name, step] of Object.entries(data.steps)) {
+            const block = document.createElement("details");
+            block.innerHTML = `
+                <summary>
+                    ${name.toUpperCase()} — ${step.status}
+                    ${step.time ? `(${step.time}s)` : ""}
+                </summary>
+                <pre>${step.result ? JSON.stringify(step.result, null, 2) : ""}</pre>
+            `;
+            resultsDiv.appendChild(block);
+        }
+
+        if (data.current === "finished" || data.current === "failed") {
+            clearInterval(interval);
+            scanBtn.textContent = "Scan Completed ✅";
+        }
+    }, 1500);
+}
+</script>
 </body>
 </html>
