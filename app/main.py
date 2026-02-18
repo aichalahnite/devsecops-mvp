@@ -7,13 +7,17 @@ import json
 import time
 import socket
 from threading import Thread
+from io import BytesIO
 
 import docker
-import yaml
 import requests
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
 from fastapi import FastAPI, UploadFile, File, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 
@@ -23,11 +27,18 @@ from fastapi.staticfiles import StaticFiles
 UPLOAD_DIR = "/tmp/uploads"
 SCAN_TIMEOUT = 300
 NETWORK_NAME = "scanner_net"
+COMMON_WEB_PORTS = [80, 8000, 5000, 3000]
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 app = FastAPI()
 docker_client = docker.from_env()
+
+# Ensure network exists
+try:
+    docker_client.networks.get(NETWORK_NAME)
+except docker.errors.NotFound:
+    docker_client.networks.create(NETWORK_NAME, driver="bridge")
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -45,30 +56,28 @@ def init_scan(scan_id):
         "cancelled": False,
         "score": None,
         "start_time": time.time(),
+        "end_time": None,
+        "total_duration": None,
         "steps": {
-            "bandit": {"status": "pending", "start": None, "end": None},
-            "gitleaks": {"status": "pending", "start": None, "end": None},
-            "trivy": {"status": "pending", "start": None, "end": None},
-            "dast": {"status": "pending", "start": None, "end": None},
+            "bandit": {"status": "pending"},
+            "gitleaks": {"status": "pending"},
+            "trivy": {"status": "pending"},
+            "dast": {"status": "pending"},
         }
     }
 
 # =====================================================
 # UTILITIES
 # =====================================================
-def get_random_port():
-    s = socket.socket()
-    s.bind(('', 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
 def compute_security_score(results):
     high = medium = low = 0
+
     for tool in results.values():
         if not tool.get("result"):
             continue
+
         data = tool["result"]
+
         if isinstance(data, dict):
             findings = data.get("results", []) or data.get("Matches", [])
             for f in findings:
@@ -79,38 +88,155 @@ def compute_security_score(results):
                     medium += 1
                 elif "low" in sev:
                     low += 1
+
+        if isinstance(data, dict) and "site" in data:
+            for site in data.get("site", []):
+                for alert in site.get("alerts", []):
+                    risk = alert.get("riskdesc", "").lower()
+                    if "high" in risk:
+                        high += 1
+                    elif "medium" in risk:
+                        medium += 1
+                    elif "low" in risk:
+                        low += 1
+
     score = 100 - (high * 10 + medium * 5 + low * 2)
     return max(score, 0)
+
+def generate_pdf_report(scan_data):
+    """Generate a PDF report from scan results."""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    story = []
+
+    # Title
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        spaceAfter=30,
+        alignment=1  # Center
+    )
+    story.append(Paragraph("DevSecOps Security Scan Report", title_style))
+    story.append(Spacer(1, 12))
+
+    # Summary section
+    summary_style = styles['Heading2']
+    story.append(Paragraph("Scan Summary", summary_style))
+    story.append(Spacer(1, 12))
+
+    score = scan_data.get('score', 'N/A')
+    duration = scan_data.get('total_duration', 'N/A')
+    start_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(scan_data.get('start_time', time.time())))
+
+    summary_data = [
+        ['Security Score', f'{score}/100'],
+        ['Scan Duration', f'{duration} seconds'],
+        ['Start Time', start_time],
+        ['Status', scan_data.get('current', 'Unknown')]
+    ]
+
+    summary_table = Table(summary_data, colWidths=[200, 300])
+    summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+    story.append(summary_table)
+    story.append(Spacer(1, 20))
+
+    # Results section
+    story.append(Paragraph("Detailed Results", styles['Heading2']))
+    story.append(Spacer(1, 12))
+
+    steps = scan_data.get('steps', {})
+    for tool_name, tool_data in steps.items():
+        story.append(Paragraph(f"{tool_name.upper()} Results", styles['Heading3']))
+        story.append(Spacer(1, 6))
+
+        status = tool_data.get('status', 'Unknown')
+        duration = tool_data.get('duration', 'N/A')
+
+        tool_info = f"Status: {status} | Duration: {duration}s"
+        story.append(Paragraph(tool_info, styles['Normal']))
+        story.append(Spacer(1, 6))
+
+        result = tool_data.get('result')
+        if result:
+            # Convert result to formatted text
+            result_text = json.dumps(result, indent=2)
+            # Truncate if too long
+            if len(result_text) > 2000:
+                result_text = result_text[:2000] + "\n... (truncated)"
+            story.append(Paragraph(f"<pre>{result_text}</pre>", styles['Normal']))
+        else:
+            story.append(Paragraph("No results available", styles['Normal']))
+
+        story.append(Spacer(1, 12))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
 
 def cleanup_scan(scan_id):
     for c in SCAN_STATE[scan_id]["containers"]:
         try:
-            container = docker_client.containers.get(c)
-            container.remove(force=True)
+            docker_client.containers.get(c).remove(force=True)
         except:
             pass
 
 # =====================================================
-# PROJECT DETECTION (RECURSIVE)
+# PROJECT DETECTION
 # =====================================================
-def detect_project_type(path):
-    dockerfile_path = None
-    compose_path = None
+def detect_all_targets(path):
+    targets = []
+    for root, _, files in os.walk(path):
+        if "Dockerfile" in files:
+            targets.append(root)
+    return targets
 
-    for root, dirs, files in os.walk(path):
-        if "docker-compose.yml" in files and not compose_path:
-            compose_path = os.path.join(root, "docker-compose.yml")
-        if "Dockerfile" in files and not dockerfile_path:
-            dockerfile_path = os.path.join(root, "Dockerfile")
-        if compose_path and dockerfile_path:
-            break
+# =====================================================
+# ENV FILE HANDLING (NEW)
+# =====================================================
+def find_env_file(base_path):
+    """
+    Recursively find the closest .env file, ignoring dependency dirs.
+    """
+    ignore_dirs = {".git", "__pycache__", "venv", ".venv", "node_modules"}
+    candidates = []
 
-    if compose_path:
-        return "docker-compose", os.path.dirname(compose_path)
-    elif dockerfile_path:
-        return "dockerfile", os.path.dirname(dockerfile_path)
-    else:
-        return "source-code", path
+    for root, dirs, files in os.walk(base_path):
+        dirs[:] = [d for d in dirs if d not in ignore_dirs]
+
+        if ".env" in files:
+            depth = root.count(os.sep)
+            candidates.append((depth, os.path.join(root, ".env")))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: x[0])
+    return candidates[0][1]
+
+def load_env_file(env_path):
+    env = {}
+    if not env_path or not os.path.exists(env_path):
+        return env
+
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            env[key.strip()] = value.strip().strip('"').strip("'")
+    return env
 
 # =====================================================
 # ROUTES
@@ -136,20 +262,7 @@ async def start_scan(file: UploadFile = File(...)):
 
 @app.get("/scan-status/{scan_id}")
 def status(scan_id: str):
-    state = SCAN_STATE.get(scan_id)
-    if not state:
-        return {"error": "Not found"}
-
-    now = time.time()
-    for name, step in state["steps"].items():
-        if step["start"]:
-            end_time = step["end"] if step["end"] else now
-            step["duration"] = round(end_time - step["start"], 2)
-        else:
-            step["duration"] = 0
-
-    state["total_duration"] = round(now - state["start_time"], 2)
-    return state
+    return SCAN_STATE.get(scan_id, {"error": "Not found"})
 
 @app.post("/cancel/{scan_id}")
 def cancel(scan_id: str):
@@ -160,59 +273,65 @@ def cancel(scan_id: str):
         return {"status": "cancelled"}
     return {"error": "Not found"}
 
+@app.get("/download-pdf/{scan_id}")
+def download_pdf(scan_id: str):
+    scan_data = SCAN_STATE.get(scan_id)
+    if not scan_data:
+        return {"error": "Scan not found"}
+
+    if scan_data.get("current") != "finished":
+        return {"error": "Scan not completed yet"}
+
+    pdf_buffer = generate_pdf_report(scan_data)
+
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=security-scan-{scan_id}.pdf"}
+    )
+
 # =====================================================
 # PIPELINE
 # =====================================================
 def run_pipeline(scan_id, zip_path):
-    start_time = time.time()
     project_path = os.path.join(UPLOAD_DIR, scan_id)
 
-    try:
-        with zipfile.ZipFile(zip_path, "r") as z:
-            z.extractall(project_path)
-    except Exception as e:
-        SCAN_STATE[scan_id]["current"] = "failed"
-        SCAN_STATE[scan_id]["error"] = str(e)
-        return
-
-    steps = SCAN_STATE[scan_id]["steps"]
+    with zipfile.ZipFile(zip_path, "r") as z:
+        z.extractall(project_path)
 
     def run_step(name, func):
-        if SCAN_STATE[scan_id]["cancelled"]:
-            return False
-
         SCAN_STATE[scan_id]["current"] = name
-        steps[name]["status"] = "running"
-        steps[name]["start"] = time.time()
+        SCAN_STATE[scan_id]["steps"][name]["status"] = "running"
+        start = time.time()
 
-        try:
-            result = func(project_path, scan_id)
-            steps[name]["result"] = result
-            steps[name]["status"] = "done"
-        except Exception as e:
-            steps[name]["status"] = "failed"
-            steps[name]["error"] = str(e)
-            return False
-        finally:
-            steps[name]["end"] = time.time()
+        result = func(project_path, scan_id)
 
-        return True
+        SCAN_STATE[scan_id]["steps"][name].update({
+            "status": "done",
+            "duration": round(time.time() - start, 2),
+            "result": result
+        })
 
-    if not run_step("bandit", run_bandit): return
+    run_step("bandit", run_bandit)
     SCAN_STATE[scan_id]["progress"] = 25
 
-    if not run_step("gitleaks", run_gitleaks): return
+    run_step("gitleaks", run_gitleaks)
     SCAN_STATE[scan_id]["progress"] = 50
 
-    if not run_step("trivy", run_trivy): return
+    run_step("trivy", run_trivy)
     SCAN_STATE[scan_id]["progress"] = 75
 
-    if not run_step("dast", run_dast): return
+    run_step("dast", run_dast)
     SCAN_STATE[scan_id]["progress"] = 100
 
-    SCAN_STATE[scan_id]["score"] = compute_security_score(steps)
-    SCAN_STATE[scan_id]["total_time"] = round(time.time() - start_time, 2)
+    SCAN_STATE[scan_id]["score"] = compute_security_score(SCAN_STATE[scan_id]["steps"])
+    SCAN_STATE[scan_id]["end_time"] = time.time()
+    SCAN_STATE[scan_id]["total_duration"] = round(
+        SCAN_STATE[scan_id]["end_time"] - SCAN_STATE[scan_id]["start_time"], 2
+    )
     SCAN_STATE[scan_id]["current"] = "finished"
+
+    cleanup_scan(scan_id)
 
 # =====================================================
 # STATIC SCANS
@@ -231,9 +350,7 @@ def run_gitleaks(path, scan_id):
         "zricethezav/gitleaks:latest",
         ["detect", "-s", "/scan", "-f", "json"],
         volumes={path: {"bind": "/scan", "mode": "ro"}},
-        remove=True,
-        mem_limit="256m",
-        nano_cpus=500000000
+        remove=True
     )
     return json.loads(out.decode() or "{}")
 
@@ -242,133 +359,119 @@ def run_trivy(path, scan_id):
         "aquasec/trivy:latest",
         ["fs", "/scan", "--format", "json"],
         volumes={path: {"bind": "/scan", "mode": "ro"}},
-        remove=True,
-        mem_limit="256m",
-        nano_cpus=500000000
+        remove=True
     )
     return json.loads(out.decode() or "{}")
 
 # =====================================================
-# DAST SCAN (DYNAMIC)
+# DAST — FIXED, HARDENED, ENV-AWARE
 # =====================================================
 def run_dast(path, scan_id):
-    project_type, target_path = detect_project_type(path)
+    targets = detect_all_targets(path)
     results = {}
 
-    try:
-        if project_type == "docker-compose":
-            # Run docker-compose services
-            subprocess.run(["docker-compose", "up", "-d"], cwd=target_path, check=True)
-            compose_file = os.path.join(target_path, "docker-compose.yml")
-            with open(compose_file) as f:
-                compose = yaml.safe_load(f)
+    if not targets:
+        return {"error": "No Dockerfile found"}
 
-            services = []
-            for name, svc in compose.get("services", {}).items():
-                ports = svc.get("ports", [])
-                for p in ports:
-                    host_port = int(p.split(":")[0])
-                    services.append({"name": name, "port": host_port})
+    # 🔐 ENV discovery (once per scan)
+    env_path = find_env_file(path)
+    project_env = load_env_file(env_path)
 
-            # Health check
-            for svc in services:
-                healthy = False
-                for _ in range(30):
-                    try:
-                        r = requests.get(f"http://localhost:{svc['port']}", timeout=1)
-                        if r.status_code < 500:
-                            healthy = True
-                            break
-                    except:
-                        time.sleep(1)
-                if not healthy:
-                    results[svc["name"]] = {"error": "Service did not start in time"}
+    if env_path:
+        print(f"[DAST] Using .env file: {env_path}")
+        print(f"[DAST] Loaded env keys: {list(project_env.keys())}")
+    else:
+        print("[DAST] No .env file found")
 
-            # Run ZAP per service
-            for svc in services:
-                if "error" in results.get(svc["name"], {}):
-                    continue
-                zap_output = docker_client.containers.run(
-                    "owasp/zap2docker-stable",
-                    [
-                        "zap-baseline.py",
-                        "-t", f"http://host.docker.internal:{svc['port']}",
-                        "-J", f"{svc['name']}_report.json"
-                    ],
-                    network_mode="host",
-                    remove=True,
-                    mem_limit="512m",
-                    nano_cpus=800000000
-                )
-                try:
-                    results[svc["name"]] = json.loads(zap_output.decode())
-                except:
-                    results[svc["name"]] = {"raw": zap_output.decode()}
+    default_env = {"ENV": "production"}
+    merged_env = {**default_env, **project_env}
 
-            # Cleanup docker-compose
-            subprocess.run(["docker-compose", "down"], cwd=target_path, check=True)
+    for idx, target_path in enumerate(targets, 1):
+        label = f"target_{idx}"
+        image_tag = f"{label}_img_{scan_id}"
+        container_name = f"{label}_ctr_{scan_id}"
 
-        elif project_type == "dockerfile":
-            # Single Dockerfile
-            image_tag = f"temp_image_{scan_id}"
-            container_name = f"temp_container_{scan_id}"
+        try:
             docker_client.images.build(path=target_path, tag=image_tag)
+
             container = docker_client.containers.run(
                 image_tag,
                 name=container_name,
                 detach=True,
                 network=NETWORK_NAME,
-                mem_limit="512m",
-                nano_cpus=800000000
+                environment=merged_env
             )
+
             SCAN_STATE[scan_id]["containers"].append(container_name)
+            time.sleep(3)
+            container.reload()
 
-            # Health check
-            healthy = False
-            for _ in range(30):
-                container.reload()
-                if container.status == "exited":
-                    raise Exception("Target container exited unexpectedly")
-                try:
-                    requests.get(f"http://{container_name}:8000", timeout=1)
-                    healthy = True
+            exposed = container.attrs["Config"].get("ExposedPorts")
+
+            if not exposed:
+                results[label] = {
+                    "info": "Non-HTTP service detected",
+                    "logs": container.logs().decode()
+                }
+                container.remove(force=True)
+                docker_client.images.remove(image_tag, force=True)
+                continue
+
+            detected_port = None
+            for _ in range(20):
+                for p in COMMON_WEB_PORTS:
+                    try:
+                        s = socket.create_connection((container_name, p), timeout=1)
+                        s.close()
+                        detected_port = p
+                        break
+                    except:
+                        pass
+                if detected_port:
                     break
-                except:
-                    time.sleep(1)
-            if not healthy:
-                raise Exception("Target container did not become ready in time")
+                time.sleep(1)
 
-            zap_output = docker_client.containers.run(
+            if not detected_port:
+                results[label] = {
+                    "error": "Service did not become reachable",
+                    "logs": container.logs().decode()
+                }
+                container.remove(force=True)
+                docker_client.images.remove(image_tag, force=True)
+                continue
+
+            target_url = f"http://{container_name}:{detected_port}"
+
+            zap = docker_client.containers.run(
                 "owasp/zap2docker-stable",
-                [
-                    "zap-baseline.py",
-                    "-t", f"http://{container_name}:8000",
-                    "-J", "report.json"
-                ],
+                ["zap-baseline.py", "-t", target_url, "-J", "/zap/wrk/report.json"],
                 network=NETWORK_NAME,
-                remove=True,
-                mem_limit="512m",
-                nano_cpus=800000000
+                volumes={target_path: {"bind": "/zap/wrk", "mode": "rw"}},
+                detach=True
             )
-            try:
-                results["target"] = json.loads(zap_output.decode())
-            except:
-                results["target"] = {"raw": zap_output.decode()}
 
-            # Cleanup
+            zap.wait(timeout=SCAN_TIMEOUT)
+            zap_logs = zap.logs().decode()
+
+            report_file = os.path.join(target_path, "report.json")
+            report = json.load(open(report_file)) if os.path.exists(report_file) else {}
+
+            results[label] = {
+                "port": detected_port,
+                "zap_logs": zap_logs,
+                "report": report
+            }
+
+            zap.remove(force=True)
+            container.remove(force=True)
+            docker_client.images.remove(image_tag, force=True)
+
+        except Exception as e:
+            results[label] = {"error": str(e)}
             try:
-                docker_client.containers.get(container_name).remove(force=True)
-            except:
-                pass
-            try:
+                container.remove(force=True)
                 docker_client.images.remove(image_tag, force=True)
             except:
                 pass
 
-        else:
-            results["error"] = "No Dockerfile or docker-compose.yml found; cannot run DAST"
-
-        return results
-
-    except Exception as e:
-        return {"error": str(e)}
+    return results

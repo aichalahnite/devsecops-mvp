@@ -23,6 +23,9 @@
     <div id="statusBox"></div>
     <div id="scoreBox"></div>
     <div id="results"></div>
+    <div id="downloadSection" style="display: none;">
+        <button id="downloadPdfBtn" class="primary">Download PDF Report</button>
+    </div>
 
 </div>
 
@@ -34,6 +37,8 @@ const progressBar = document.getElementById("progressBar");
 const statusBox = document.getElementById("statusBox");
 const resultsDiv = document.getElementById("results");
 const scoreBox = document.getElementById("scoreBox");
+const downloadSection = document.getElementById("downloadSection");
+const downloadPdfBtn = document.getElementById("downloadPdfBtn");
 
 let scanId = null;
 let polling = null;
@@ -129,10 +134,25 @@ function startPolling() {
             scanBtn.disabled = false;
             cancelBtn.disabled = true;
             scanBtn.textContent = "Start Scan";
+
+            if (data.current === "finished") {
+                downloadSection.style.display = "block";
+            }
         }
 
     }, 1500);
 }
+
+downloadPdfBtn.addEventListener("click", () => {
+    if (!scanId) return;
+
+    const link = document.createElement("a");
+    link.href = `/download-pdf/${scanId}`;
+    link.download = `security-scan-${scanId}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+});
 
 function getScoreClass(score) {
     if (score >= 80) return "good";
