@@ -9,6 +9,8 @@ import socket
 from threading import Thread
 
 import docker
+import yaml
+import requests
 
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import HTMLResponse
@@ -35,7 +37,6 @@ templates = Jinja2Templates(directory="templates")
 # =====================================================
 SCAN_STATE = {}
 
-
 def init_scan(scan_id):
     SCAN_STATE[scan_id] = {
         "current": "waiting",
@@ -52,7 +53,6 @@ def init_scan(scan_id):
         }
     }
 
-
 # =====================================================
 # UTILITIES
 # =====================================================
@@ -63,15 +63,12 @@ def get_random_port():
     s.close()
     return port
 
-
 def compute_security_score(results):
     high = medium = low = 0
-
     for tool in results.values():
         if not tool.get("result"):
             continue
         data = tool["result"]
-
         if isinstance(data, dict):
             findings = data.get("results", []) or data.get("Matches", [])
             for f in findings:
@@ -82,10 +79,8 @@ def compute_security_score(results):
                     medium += 1
                 elif "low" in sev:
                     low += 1
-
     score = 100 - (high * 10 + medium * 5 + low * 2)
     return max(score, 0)
-
 
 def cleanup_scan(scan_id):
     for c in SCAN_STATE[scan_id]["containers"]:
@@ -95,6 +90,16 @@ def cleanup_scan(scan_id):
         except:
             pass
 
+# =====================================================
+# PROJECT DETECTION
+# =====================================================
+def detect_project_type(path):
+    if os.path.exists(os.path.join(path, "docker-compose.yml")):
+        return "docker-compose"
+    elif os.path.exists(os.path.join(path, "Dockerfile")):
+        return "dockerfile"
+    else:
+        return "source-code"
 
 # =====================================================
 # ROUTES
@@ -102,7 +107,6 @@ def cleanup_scan(scan_id):
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
-
 
 @app.post("/scan")
 async def start_scan(file: UploadFile = File(...)):
@@ -119,16 +123,13 @@ async def start_scan(file: UploadFile = File(...)):
     Thread(target=run_pipeline, args=(scan_id, zip_path), daemon=True).start()
     return {"scan_id": scan_id}
 
-
 @app.get("/scan-status/{scan_id}")
 def status(scan_id: str):
     state = SCAN_STATE.get(scan_id)
-
     if not state:
         return {"error": "Not found"}
 
     now = time.time()
-
     for name, step in state["steps"].items():
         if step["start"]:
             end_time = step["end"] if step["end"] else now
@@ -137,9 +138,7 @@ def status(scan_id: str):
             step["duration"] = 0
 
     state["total_duration"] = round(now - state["start_time"], 2)
-
     return state
-
 
 @app.post("/cancel/{scan_id}")
 def cancel(scan_id: str):
@@ -149,7 +148,6 @@ def cancel(scan_id: str):
         SCAN_STATE[scan_id]["current"] = "cancelled"
         return {"status": "cancelled"}
     return {"error": "Not found"}
-
 
 # =====================================================
 # PIPELINE
@@ -205,7 +203,6 @@ def run_pipeline(scan_id, zip_path):
     SCAN_STATE[scan_id]["total_time"] = round(time.time() - start_time, 2)
     SCAN_STATE[scan_id]["current"] = "finished"
 
-
 # =====================================================
 # STATIC SCANS
 # =====================================================
@@ -218,7 +215,6 @@ def run_bandit(path, scan_id):
     )
     return json.loads(proc.stdout or "{}")
 
-
 def run_gitleaks(path, scan_id):
     out = docker_client.containers.run(
         "zricethezav/gitleaks:latest",
@@ -229,7 +225,6 @@ def run_gitleaks(path, scan_id):
         nano_cpus=500000000
     )
     return json.loads(out.decode() or "{}")
-
 
 def run_trivy(path, scan_id):
     out = docker_client.containers.run(
@@ -242,83 +237,130 @@ def run_trivy(path, scan_id):
     )
     return json.loads(out.decode() or "{}")
 
-
 # =====================================================
-# EPHEMERAL DAST
+# DAST SCAN (DYNAMIC)
 # =====================================================
 def run_dast(path, scan_id):
-    image_tag = f"temp_image_{scan_id}"
-    container_name = f"temp_container_{scan_id}"
+    project_type = detect_project_type(path)
+    results = {}
 
     try:
-        # Build image
-        docker_client.images.build(path=path, tag=image_tag)
+        if project_type == "docker-compose":
+            # --------------------------
+            # Run docker-compose services
+            # --------------------------
+            subprocess.run(["docker-compose", "up", "-d"], cwd=path, check=True)
+            compose_file = os.path.join(path, "docker-compose.yml")
+            with open(compose_file) as f:
+                compose = yaml.safe_load(f)
 
-        # Run target container
-        container = docker_client.containers.run(
-            image_tag,
-            name=container_name,
-            detach=True,
-            network=NETWORK_NAME,
-            mem_limit="512m",
-            nano_cpus=800000000
-        )
+            services = []
+            for name, svc in compose.get("services", {}).items():
+                ports = svc.get("ports", [])
+                for p in ports:
+                    host_port = int(p.split(":")[0])
+                    services.append({"name": name, "port": host_port})
 
-        SCAN_STATE[scan_id]["containers"].append(container_name)
+            # Health check
+            for svc in services:
+                healthy = False
+                for _ in range(30):
+                    try:
+                        r = requests.get(f"http://localhost:{svc['port']}", timeout=1)
+                        if r.status_code < 500:
+                            healthy = True
+                            break
+                    except:
+                        time.sleep(1)
+                if not healthy:
+                    results[svc["name"]] = {"error": "Service did not start in time"}
 
-        # --------------------------------------------
-        # HEALTH CHECK LOOP (MAX 30 SECONDS)
-        # --------------------------------------------
-        import requests
+            # Run ZAP per service
+            for svc in services:
+                if "error" in results.get(svc["name"], {}):
+                    continue
+                zap_output = docker_client.containers.run(
+                    "owasp/zap2docker-stable",
+                    [
+                        "zap-baseline.py",
+                        "-t", f"http://host.docker.internal:{svc['port']}",
+                        "-J", f"{svc['name']}_report.json"
+                    ],
+                    network_mode="host",
+                    remove=True,
+                    mem_limit="512m",
+                    nano_cpus=800000000
+                )
+                try:
+                    results[svc["name"]] = json.loads(zap_output.decode())
+                except:
+                    results[svc["name"]] = {"raw": zap_output.decode()}
 
-        healthy = False
-        for _ in range(30):
-            container.reload()
+            # Cleanup docker-compose
+            subprocess.run(["docker-compose", "down"], cwd=path, check=True)
 
-            # If container crashed
-            if container.status == "exited":
-                raise Exception("Target container exited unexpectedly")
+        elif project_type == "dockerfile":
+            # Single Dockerfile
+            image_tag = f"temp_image_{scan_id}"
+            container_name = f"temp_container_{scan_id}"
+            docker_client.images.build(path=path, tag=image_tag)
+            container = docker_client.containers.run(
+                image_tag,
+                name=container_name,
+                detach=True,
+                network=NETWORK_NAME,
+                mem_limit="512m",
+                nano_cpus=800000000
+            )
+            SCAN_STATE[scan_id]["containers"].append(container_name)
 
+            # Health check
+            healthy = False
+            for _ in range(30):
+                container.reload()
+                if container.status == "exited":
+                    raise Exception("Target container exited unexpectedly")
+                try:
+                    requests.get(f"http://{container_name}:8000", timeout=1)
+                    healthy = True
+                    break
+                except:
+                    time.sleep(1)
+            if not healthy:
+                raise Exception("Target container did not become ready in time")
+
+            zap_output = docker_client.containers.run(
+                "owasp/zap2docker-stable",
+                [
+                    "zap-baseline.py",
+                    "-t", f"http://{container_name}:8000",
+                    "-J", "report.json"
+                ],
+                network=NETWORK_NAME,
+                remove=True,
+                mem_limit="512m",
+                nano_cpus=800000000
+            )
             try:
-                requests.get(f"http://{container_name}:8000", timeout=1)
-                healthy = True
-                break
+                results["target"] = json.loads(zap_output.decode())
             except:
-                time.sleep(1)
+                results["target"] = {"raw": zap_output.decode()}
 
-        if not healthy:
-            raise Exception("Target application did not become ready in time")
+            # Cleanup
+            try:
+                docker_client.containers.get(container_name).remove(force=True)
+            except:
+                pass
+            try:
+                docker_client.images.remove(image_tag, force=True)
+            except:
+                pass
 
-        # --------------------------------------------
-        # RUN ZAP (1 minute max for faster demo)
-        # --------------------------------------------
-        zap_output = docker_client.containers.run(
-            "owasp/zap2docker-stable",
-            [
-                "zap-baseline.py",
-                "-t", f"http://{container_name}:8000",
-                "-m", "1",
-                "-J", "report.json"
-            ],
-            network=NETWORK_NAME,
-            remove=True,
-            mem_limit="512m",
-            nano_cpus=800000000
-        )
+        else:
+            # Source code fallback (no container)
+            results["error"] = "No Dockerfile or docker-compose.yml found; cannot run DAST"
 
-        return json.loads(zap_output.decode())
+        return results
 
     except Exception as e:
         return {"error": str(e)}
-
-    finally:
-        # CLEANUP ALWAYS RUNS
-        try:
-            docker_client.containers.get(container_name).remove(force=True)
-        except:
-            pass
-
-        try:
-            docker_client.images.remove(image_tag, force=True)
-        except:
-            pass
