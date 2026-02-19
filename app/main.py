@@ -59,10 +59,10 @@ def init_scan(scan_id):
         "end_time": None,
         "total_duration": None,
         "steps": {
-            "bandit": {"status": "pending"},
-            "gitleaks": {"status": "pending"},
-            "trivy": {"status": "pending"},
-            "dast": {"status": "pending"},
+            "bandit": {"status": "pending", "start_time": None, "duration": None},
+            "gitleaks": {"status": "pending", "start_time": None, "duration": None},
+            "trivy": {"status": "pending", "start_time": None, "duration": None},
+            "dast": {"status": "pending", "start_time": None, "duration": None},
         }
     }
 
@@ -262,7 +262,22 @@ async def start_scan(file: UploadFile = File(...)):
 
 @app.get("/scan-status/{scan_id}")
 def status(scan_id: str):
-    return SCAN_STATE.get(scan_id, {"error": "Not found"})
+    scan_data = SCAN_STATE.get(scan_id)
+    if not scan_data:
+        return {"error": "Not found"}
+    
+    # Return a copy with current elapsed time if scan is still running
+    response_data = scan_data.copy()
+    if scan_data.get("end_time") is None:
+        response_data["total_duration"] = round(time.time() - scan_data["start_time"], 2)
+    
+    # Calculate current duration for running steps
+    current_time = time.time()
+    for step_name, step_data in response_data["steps"].items():
+        if step_data["status"] == "running" and step_data["start_time"]:
+            response_data["steps"][step_name]["duration"] = round(current_time - step_data["start_time"], 2)
+    
+    return response_data
 
 @app.post("/cancel/{scan_id}")
 def cancel(scan_id: str):
@@ -303,6 +318,7 @@ def run_pipeline(scan_id, zip_path):
         SCAN_STATE[scan_id]["current"] = name
         SCAN_STATE[scan_id]["steps"][name]["status"] = "running"
         start = time.time()
+        SCAN_STATE[scan_id]["steps"][name]["start_time"] = start
 
         result = func(project_path, scan_id)
 
