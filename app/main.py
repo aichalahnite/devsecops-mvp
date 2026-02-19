@@ -419,7 +419,7 @@ def run_dast(path, scan_id):
             )
 
             SCAN_STATE[scan_id]["containers"].append(container_name)
-            time.sleep(3)
+            time.sleep(5)
             container.reload()
 
             exposed = container.attrs["Config"].get("ExposedPorts")
@@ -434,10 +434,10 @@ def run_dast(path, scan_id):
                 continue
 
             detected_port = None
-            for _ in range(20):
+            for _ in range(30):
                 for p in COMMON_WEB_PORTS:
                     try:
-                        s = socket.create_connection((container_name, p), timeout=1)
+                        s = socket.create_connection((container_name, p), timeout=2)
                         s.close()
                         detected_port = p
                         break
