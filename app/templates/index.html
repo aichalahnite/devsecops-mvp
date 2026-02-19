@@ -21,7 +21,7 @@
     </div>
 
     <div id="statusBox"></div>
-    <div id="scoreBox"></div>
+    <!-- scoreBox removed per UI update request -->
     <div id="results"></div>
     <div id="downloadSection" style="display: none;">
         <button id="downloadPdfBtn" class="primary">Download PDF Report</button>
@@ -36,7 +36,6 @@ const cancelBtn = document.getElementById("cancelBtn");
 const progressBar = document.getElementById("progressBar");
 const statusBox = document.getElementById("statusBox");
 const resultsDiv = document.getElementById("results");
-const scoreBox = document.getElementById("scoreBox");
 const downloadSection = document.getElementById("downloadSection");
 const downloadPdfBtn = document.getElementById("downloadPdfBtn");
 
@@ -50,7 +49,6 @@ form.addEventListener("submit", async (e) => {
     cancelBtn.disabled = false;
     scanBtn.textContent = "Scanning...";
     resultsDiv.innerHTML = "";
-    scoreBox.innerHTML = "";
     progressBar.style.width = "0%";
 
     const formData = new FormData(form);
@@ -94,16 +92,7 @@ function startPolling() {
             </div>
         `;
 
-        if (data.score !== null) {
-            scoreBox.innerHTML = `
-                <div class="score">
-                    Security Score:
-                    <span class="${getScoreClass(data.score)}">
-                        ${data.score}/100
-                    </span>
-                </div>
-            `;
-        }
+        // security score removed from UI; no display
 
         resultsDiv.innerHTML = "";
 
@@ -154,11 +143,7 @@ downloadPdfBtn.addEventListener("click", () => {
     document.body.removeChild(link);
 });
 
-function getScoreClass(score) {
-    if (score >= 80) return "good";
-    if (score >= 50) return "medium";
-    return "bad";
-}
+<!-- score color helper removed -->
 </script>
 
 </body>

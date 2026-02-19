@@ -54,7 +54,7 @@ def init_scan(scan_id):
         "progress": 0,
         "containers": [],
         "cancelled": False,
-        "score": None,
+        # score removed from state since it's no longer displayed
         "start_time": time.time(),
         "end_time": None,
         "total_duration": None,
@@ -69,39 +69,7 @@ def init_scan(scan_id):
 # =====================================================
 # UTILITIES
 # =====================================================
-def compute_security_score(results):
-    high = medium = low = 0
-
-    for tool in results.values():
-        if not tool.get("result"):
-            continue
-
-        data = tool["result"]
-
-        if isinstance(data, dict):
-            findings = data.get("results", []) or data.get("Matches", [])
-            for f in findings:
-                sev = str(f.get("severity", f.get("Severity", ""))).lower()
-                if "high" in sev:
-                    high += 1
-                elif "medium" in sev:
-                    medium += 1
-                elif "low" in sev:
-                    low += 1
-
-        if isinstance(data, dict) and "site" in data:
-            for site in data.get("site", []):
-                for alert in site.get("alerts", []):
-                    risk = alert.get("riskdesc", "").lower()
-                    if "high" in risk:
-                        high += 1
-                    elif "medium" in risk:
-                        medium += 1
-                    elif "low" in risk:
-                        low += 1
-
-    score = 100 - (high * 10 + medium * 5 + low * 2)
-    return max(score, 0)
+# compute_security_score has been removed; scoring is no longer used/displayed
 
 def generate_pdf_report(scan_data):
     """Generate a PDF report from scan results."""
@@ -126,12 +94,11 @@ def generate_pdf_report(scan_data):
     story.append(Paragraph("Scan Summary", summary_style))
     story.append(Spacer(1, 12))
 
-    score = scan_data.get('score', 'N/A')
+    # score field omitted from report summary
     duration = scan_data.get('total_duration', 'N/A')
     start_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(scan_data.get('start_time', time.time())))
 
     summary_data = [
-        ['Security Score', f'{score}/100'],
         ['Scan Duration', f'{duration} seconds'],
         ['Start Time', start_time],
         ['Status', scan_data.get('current', 'Unknown')]
@@ -340,7 +307,7 @@ def run_pipeline(scan_id, zip_path):
     run_step("dast", run_dast)
     SCAN_STATE[scan_id]["progress"] = 100
 
-    SCAN_STATE[scan_id]["score"] = compute_security_score(SCAN_STATE[scan_id]["steps"])
+    # we no longer calculate a score; just record timing
     SCAN_STATE[scan_id]["end_time"] = time.time()
     SCAN_STATE[scan_id]["total_duration"] = round(
         SCAN_STATE[scan_id]["end_time"] - SCAN_STATE[scan_id]["start_time"], 2
